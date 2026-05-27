@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -20,7 +21,7 @@ func TestGetUsersReturns200(t *testing.T) {
 
 func TestGetUsersReturnsJSON(t *testing.T) {
 	req := httptest.NewRequest("GET", "/users", nil)
-	res := httptstest.NewRecorder()
+	res := httptest.NewRecorder()
 
 	GetUsers(res, req)
 
@@ -76,58 +77,155 @@ func TestGetUsersReturnsCorrectStructure(t *testing.T) {
 	}
 }
 
-func TestGetUsersReturnsAllUsers(t *testing.T) {
-	req := httptest.NewRequest("GET", "/users", nil)
+func TestCreateUserReturns201(t *testing.T) {
+	body := bytes.NewBufferString(`{"name":"David","email":"david@example.com"}`)
+	req := httptest.NewRequest("POST", "/users", body)
 	res := httptest.NewRecorder()
 
-	GetUsers(res, req)
+	CreateUser(res, req)
 
-	var users []user
-	err := json.NewDecoder(res.Body).Decode(&users)
-	if err != nil {
-		t.Fatalf("failed to parse json: %v", err)
-	}
-
-	// check that sample users exist
-	foundIDs := make(map[string]bool)
-	for _, u := range users {
-		foundIDs[u.ID] = true
-	}
-
-	expectedIDs := []string{"1", "2", "3"}
-	for _, id := range expectedIDs {
-		if !foundIDs[id] {
-			t.Errorf("expected user with id '%s' not found", id)
-		}
+	if res.Code != http.StatusCreated {
+		t.Errorf("want status 201, got %d", res.Code)
 	}
 }
 
-func TestGetUsersReturnsEmptyArrayWhenNoUsers(t *testing.T) {
-	// save original store
-	originalStore := defaultUserStore
-
-	// create empty store
-	emptyStore := &userStore{
-		users: make(map[string]user),
-	}
-	defaultUserStore = emptyStore
-
-	defer func() {
-		defaultUserStore = originalStore
-	}()
-
-	req := httptest.NewRequest("GET", "/users", nil)
+func TestCreateUserReturnsJSON(t *testing.T) {
+	body := bytes.NewBufferString(`{"name":"David","email":"david@example.com"}`)
+	req := httptest.NewRequest("POST", "/users", body)
 	res := httptest.NewRecorder()
 
-	GetUsers(res, req)
+	CreateUser(res, req)
 
-	var users []user
-	err := json.NewDecoder(res.Body).Decode(&users)
+	contentType := res.Header().Get("Content-Type")
+	if contentType != "application/json" {
+		t.Errorf("want 'application/json', got '%s'", contentType)
+	}
+}
+
+func TestCreateUserAddsToStorage(t *testing.T) {
+	originalStore := defaultUserStore
+	defaultUserStore = newUserStore()
+	defer func() { defaultUserStore = originalStore }()
+
+	body := bytes.NewBufferString(`{"name":"Eve","email":"eve@example.com"}`)
+	req := httptest.NewRequest("POST", "/users", body)
+	res := httptest.NewRecorder()
+
+	CreateUser(res, req)
+
+	var created user
+	err := json.NewDecoder(res.Body).Decode(&created)
 	if err != nil {
-		t.Fatalf("failed to parse json: %v", err)
+		t.Fatalf("failed to parse response: %v", err)
 	}
 
-	if len(users) != 0 {
-		t.Errorf("expected empty array, got %d users", len(users))
+	// verify user exists in store
+	allUsers := defaultUserStore.getAll()
+	found := false
+	for _, u := range allUsers {
+		if u.ID == created.ID && u.Name == "Eve" && u.Email == "eve@example.com" {
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		t.Error("created user not found in storage")
+	}
+}
+
+func TestCreateUserReturnsCreatedUser(t *testing.T) {
+	originalStore := defaultUserStore
+	defaultUserStore = newUserStore()
+	defer func() { defaultUserStore = originalStore }()
+
+	body := bytes.NewBufferString(`{"name":"Frank","email":"frank@example.com"}`)
+	req := httptest.NewRequest("POST", "/users", body)
+	res := httptest.NewRecorder()
+
+	CreateUser(res, req)
+
+	var created user
+	err := json.NewDecoder(res.Body).Decode(&created)
+	if err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+
+	if created.Name != "Frank" {
+		t.Errorf("want name 'Frank', got '%s'", created.Name)
+	}
+	if created.Email != "frank@example.com" {
+		t.Errorf("want email 'frank@example.com', got '%s'", created.Email)
+	}
+	if created.ID == "" {
+		t.Error("expected user id to be set")
+	}
+}
+
+func TestCreateUserValidatesRequiredName(t *testing.T) {
+	body := bytes.NewBufferString(`{"email":"test@example.com"}`)
+	req := httptest.NewRequest("POST", "/users", body)
+	res := httptest.NewRecorder()
+
+	CreateUser(res, req)
+
+	if res.Code != http.StatusBadRequest {
+		t.Errorf("want status 400, got %d", res.Code)
+	}
+
+	var response map[string]string
+	err := json.NewDecoder(res.Body).Decode(&response)
+	if err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+
+	if response["error"] != "name is required" {
+		t.Errorf("want 'name is required', got '%s'", response["error"])
+	}
+}
+
+func TestCreateUserValidatesRequiredEmail(t *testing.T) {
+	body := bytes.NewBufferString(`{"name":"Grace"}`)
+	req := httptest.NewRequest("POST", "/users", body)
+	res := httptest.NewRecorder()
+
+	CreateUser(res, req)
+
+	if res.Code != http.StatusBadRequest {
+		t.Errorf("want status 400, got %d", res.Code)
+	}
+
+	var response map[string]string
+	err := json.NewDecoder(res.Body).Decode(&response)
+	if err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+
+	if response["error"] != "email is required" {
+		t.Errorf("want 'email is required', got '%s'", response["error"])
+	}
+}
+
+func TestCreateUserValidatesEmptyBody(t *testing.T) {
+	body := bytes.NewBufferString(``)
+	req := httptest.NewRequest("POST", "/users", body)
+	res := httptest.NewRecorder()
+
+	CreateUser(res, req)
+
+	if res.Code != http.StatusBadRequest {
+		t.Errorf("want status 400, got %d", res.Code)
+	}
+}
+
+func TestCreateUserValidatesInvalidJSON(t *testing.T) {
+	body := bytes.NewBufferString(`{"name":"Henry","email":}`)
+	req := httptest.NewRequest("POST", "/users", body)
+	res := httptest.NewRecorder()
+
+	CreateUser(res, req)
+
+	if res.Code != http.StatusBadRequest {
+		t.Errorf("want status 400, got %d", res.Code)
 	}
 }
